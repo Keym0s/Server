@@ -17,7 +17,7 @@ void Server::incomingConnection(qintptr socketDescriptor)
     socket = new QTcpSocket;
     socket->setSocketDescriptor(socketDescriptor);
     connect(socket,&QTcpSocket::readyRead, this, &Server::slotReadyRead);
-    connect(socket,&QTcpSocket::readyRead, this, &QTcpSocket::deleteLater);
+    connect(socket,&QTcpSocket::disconnected, this, &QTcpSocket::deleteLater);
 
     Sockets.push_back(socket);
     qDebug() << "client connected" << socketDescriptor;
@@ -34,6 +34,7 @@ void Server::slotReadyRead()
         QString str;
         in >> str;
         qDebug() << str;
+        SendToClient(str);
     }
     else
     {
@@ -47,5 +48,9 @@ void Server::SendToClient(QString str)
     QDataStream out(&Data, QIODevice::WriteOnly);
     out.setVersion(QDataStream::Qt_6_2);
     out << str;
-    socket->write(Data);
+    //socket->write(Data);
+    for(int i = 0; i < Sockets.size(); i++)
+    {
+        Sockets[i]->write(Data);
+    }
 }

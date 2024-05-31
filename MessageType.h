@@ -8,9 +8,7 @@ enum class MessageType
     AuthData,
     AuthDone,
     AuthError,
-    Register,
-    RegisterDone,
-    RegisterError
+    Register
 };
 
 #endif // MESSAGETYPE_H

@@ -1,6 +1,7 @@
 //SERVER.CPP
 #include "server.h"
 
+//Конструктор
 Server::Server()
 {
     if(this->listen(QHostAddress::Any, 2323))
@@ -13,6 +14,7 @@ Server::Server()
     }
     nextBlockSize = 0;
 
+    //БД
     QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
     db.setDatabaseName("users.db");
 
@@ -30,19 +32,21 @@ Server::Server()
     }
 }
 
+//Деструктор
 Server::~Server()
 {
-    // Закрытие всех сокетов
+    //Закрытие всех сокетов
     for(QTcpSocket* socket : Sockets)
     {
         socket->close();
     }
 
-    // Закрытие соединения с базой данных
+    //Закрытие соединения с базой данных
     QSqlDatabase::database().close();
     QSqlDatabase::removeDatabase(QSqlDatabase::defaultConnection);
 }
 
+//Подключение клиента
 void Server::incomingConnection(qintptr socketDescriptor)
 {
     socket = new QTcpSocket;
@@ -54,6 +58,8 @@ void Server::incomingConnection(qintptr socketDescriptor)
     qDebug() << "client connected" << socketDescriptor;
 }
 
+
+//Чтение входящего запроса
 void Server::slotReadyRead()
 {
     socket = (QTcpSocket*)sender();
@@ -61,11 +67,6 @@ void Server::slotReadyRead()
     in.setVersion(QDataStream::Qt_6_2);
     if(in.status() == QDataStream::Ok)
     {
-        // qDebug() << "read ...";
-        // QString str;
-        // in >> str;
-        // qDebug() << str;
-        // SendToClient(str);
         for(;;)
         {
             if(nextBlockSize == 0)
@@ -88,6 +89,7 @@ void Server::slotReadyRead()
             {
                 case MessageType::Message:
                 {
+                    qDebug() << "Сообщение принято от" << socketDescriptor();
                     QString str;
                     QTime time;
                     in >> time >> str;
@@ -119,6 +121,7 @@ void Server::slotReadyRead()
     }
 }
 
+//Обработка информации при входе
 void Server::slotProcessAuthData(QString login, QString password)
 {
     QSqlQuery query;
@@ -129,24 +132,27 @@ void Server::slotProcessAuthData(QString login, QString password)
 
     if (query.next())
     {
-        // Пользователь найден
+        //Пользователь найден
         qDebug() << "Пользователь авторизован: " << login;
-        // Отправьте подтверждение клиенту
+
+        //Отправить подтверждение клиенту
         Data.clear();
         QDataStream out(&Data, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_2);
-        out << quint16(0) << MessageType::AuthDone;
+        out << quint16(0) << MessageType::AuthDone << login;
         out.device()->seek(0);
         out << quint16(Data.size() - sizeof(quint16));
         socket->write(Data);
+        return;
     }
     else
     {
-        // Пользователь не найден
+        //Пользователь не найден
         QString str;
-        str = "Неверный логин или пароль для: ";
-        qDebug() << str << login;
-        // Отправьте сообщение об ошибке клиенту
+        str = "Неверный логин или пароль";
+        qDebug() << str << " для:" << login;
+
+        //Отправить сообщение об ошибке клиенту
         Data.clear();
         QDataStream out(&Data, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_2);
@@ -154,12 +160,14 @@ void Server::slotProcessAuthData(QString login, QString password)
         out.device()->seek(0);
         out << quint16(Data.size() - sizeof(quint16));
         socket->write(Data);
+        return;
     }
 }
 
+//Обработка информации при регистрации
 void Server::slotRegisterUser(QString login, QString password)
 {
-    // Проверка на существование пользователя с таким логином
+    //Проверка на существование пользователя с таким логином
     QSqlQuery checkQuery;
     checkQuery.prepare("SELECT * FROM users WHERE login = :login");
     checkQuery.bindValue(":login", login);
@@ -168,11 +176,11 @@ void Server::slotRegisterUser(QString login, QString password)
         QString str;
         str = "Ошибка при проверке пользователя: ";
         qDebug() << str << checkQuery.lastError().text();
-        // Отправьте сообщение об ошибке клиенту
+        //Отправить сообщение об ошибке клиенту
         Data.clear();
         QDataStream out(&Data, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_2);
-        out << quint16(0) << MessageType::RegisterError << str;
+        out << quint16(0) << MessageType::AuthError << str;
         out.device()->seek(0);
         out << quint16(Data.size() - sizeof(quint16));
         socket->write(Data);
@@ -188,7 +196,7 @@ void Server::slotRegisterUser(QString login, QString password)
         Data.clear();
         QDataStream out(&Data, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_2);
-        out << quint16(0) << MessageType::RegisterError << str;
+        out << quint16(0) << MessageType::AuthError << str;
         out.device()->seek(0);
         out << quint16(Data.size() - sizeof(quint16));
         socket->write(Data);
@@ -210,7 +218,7 @@ void Server::slotRegisterUser(QString login, QString password)
         Data.clear();
         QDataStream out(&Data, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_2);
-        out << quint16(0) << MessageType::RegisterError << str;
+        out << quint16(0) << MessageType::AuthError << str;
         out.device()->seek(0);
         out << quint16(Data.size() - sizeof(quint16));
         socket->write(Data);
@@ -222,19 +230,20 @@ void Server::slotRegisterUser(QString login, QString password)
         Data.clear();
         QDataStream out(&Data, QIODevice::WriteOnly);
         out.setVersion(QDataStream::Qt_6_2);
-        out << quint16(0) << MessageType::Register;
+        out << quint16(0) << MessageType::AuthDone << login;
         out.device()->seek(0);
         out << quint16(Data.size() - sizeof(quint16));
         socket->write(Data);
     }
 }
 
+//Отправка сообщения в общий чат
 void Server::SendToClient(QString str)
 {
     Data.clear();
     QDataStream out(&Data, QIODevice::WriteOnly);
     out.setVersion(QDataStream::Qt_6_2);
-    out << quint16(0) << QTime::currentTime() << str;
+    out << quint16(0) << MessageType::Message << QTime::currentTime() << str;
     out.device()->seek(0);
     out << quint16(Data.size() - sizeof(quint16));
     //socket->write(Data);

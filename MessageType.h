@@ -8,7 +8,9 @@ enum class MessageType
     AuthData,
     AuthDone,
     AuthError,
-    Register
+    Register,
+    GetContacts,
+    JoinChat
 };
 
 #endif // MESSAGETYPE_H

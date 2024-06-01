@@ -20,13 +20,16 @@ public:
     QTcpSocket* socket;
 
 private:
-    QVector <QTcpSocket*> Sockets;
+    QMap<int, QTcpSocket *> clients; //Сопоставление ID пользователя и сокета
     QByteArray Data;
-    void SendToClient(QString str);
+    QSqlDatabase db;
+    void SendToClient(QString str, QString user);
     void slotProcessAuthData(QString login, QString password);
     void slotRegisterUser(QString login, QString password);
+    void GetContacts();
+    void SendPrivateChat(const QStringList &usernames);
+    void ShowChat(int ChatID);
     quint16 nextBlockSize;
-
 public slots:
     void incomingConnection(qintptr socketDescriptor);
     void slotReadyRead();

@@ -152,11 +152,46 @@ void Server::slotReadyRead()
                     GetContacts();
                     break;
                 }
+                case MessageType::GetChats:
+                {
+                    GetChats();
+                    break;
+                }
                 case MessageType::JoinChat:
                 {
                     QStringList usernames;
                     in >> usernames;
                     SendPrivateChat(usernames);
+                    break;
+                }
+                case MessageType::JoinGroupChat:
+                {
+                    QStringList usernames;
+                    QString chat;
+                    foreach (const QString &username, usernames) {
+                        qDebug() << username;
+                    }
+                    in >> usernames >> chat;
+                    SendGroupChat(usernames, chat);
+                    break;
+                }
+                case MessageType::ShowGroupChat:
+                {
+                    QString chat;
+                    in >> chat;
+                    QSqlQuery query;
+                    query.prepare("SELECT ChatID FROM Chats WHERE ChatName = :chatName");
+                    query.bindValue(":chatName", chat); // Замените название_чата на фактическое название интересующего вас чата
+                    if (!query.exec()) {
+                        qDebug() << "Ошибка при поиске ID чата: " << query.lastError().text();
+                    } else {
+                        if (query.next())
+                        {
+                            int chatID = query.value(0).toInt();
+                            qDebug() << "ID чата: " << chatID;
+                            ShowChat(chatID);
+                        }
+                    }
                     break;
                 }
             }
@@ -301,7 +336,13 @@ void Server::GetContacts()
 {
     QStringList usernames;
     QSqlQuery query;
-    query.exec("SELECT Username FROM Users WHERE UserID != 0");
+    int currentUserId = clients.value(socket).userID;
+    query.prepare("SELECT Username FROM Users WHERE UserID != :currentUserId AND UserID != 0");
+    query.bindValue(":currentUserId", currentUserId);
+    if (!query.exec()) {
+        qDebug() << "Ошибка при выборке контактов: " << query.lastError().text();
+        return;
+    }
 
     while (query.next()) {
         QString username = query.value(0).toString();
@@ -312,6 +353,34 @@ void Server::GetContacts()
     QDataStream out(&Data, QIODevice::WriteOnly);
     out.setVersion(QDataStream::Qt_5_10);
     out << quint16(0) << MessageType::GetContacts << usernames;
+
+    // Отправляем данные клиенту
+    socket->write(Data);
+}
+
+//Отправка списка чатов
+void Server::GetChats()
+{
+    int userID = clients.value(socket).userID;
+    QStringList chatsName;
+    //Запрос на выборку названий чатов, где участвует userID и количество участников больше 2
+    QString queryString = QString(
+                              "SELECT ChatName FROM Chats "
+                              "WHERE ParticipantIDs LIKE '%%1%' AND "
+                              "(LENGTH(ParticipantIDs) - LENGTH(REPLACE(ParticipantIDs, ',', '')) + 1) > 2"
+                              ).arg(userID);
+
+    QSqlQuery query;
+    if(query.exec(queryString)) {
+        while(query.next()) {
+            QString chatName = query.value(0).toString(); //Получаем название чата
+            chatsName.append(chatName); //Добавляем название в список названий чатов
+        }
+    }
+    Data.clear();
+    QDataStream out(&Data, QIODevice::WriteOnly);
+    out.setVersion(QDataStream::Qt_5_10);
+    out << quint16(0) << MessageType::GetChats << chatsName;
 
     // Отправляем данные клиенту
     socket->write(Data);
@@ -422,14 +491,93 @@ void Server::ShowChat(int ChatID)
         messages.append(messageString);
     }
 
+    QSqlQuery chatQuery;
+    chatQuery.prepare("SELECT ParticipantIDs FROM Chats WHERE ChatID = :chatID");
+    chatQuery.bindValue(":chatID", ChatID);
+    QStringList participantUsernames;
+    if (chatQuery.exec() && chatQuery.next()) {
+        QString participantIDs = chatQuery.value(0).toString();
+        QStringList userIDList = participantIDs.split(',');
+
+        // Получаем имена пользователей по их UserID
+        foreach (const QString &userID, userIDList) {
+            QSqlQuery userQuery;
+            userQuery.prepare("SELECT Username FROM Users WHERE UserID = :userID");
+            userQuery.bindValue(":userID", userID.trimmed());
+            if (userQuery.exec() && userQuery.next()) {
+                participantUsernames.append(userQuery.value(0).toString());
+            }
+        }
+    }
     //Отправляем собранный QByteArray через сокет
-    out << quint16(0) << MessageType::JoinChat << messages;
+    out << quint16(0) << MessageType::JoinChat << messages << participantUsernames;
     socket->write(Data);
 }
 
+//Создание группового чата
+void Server::SendGroupChat(const QStringList &usernames, const QString &chatname)
+{
+    QSqlQuery query;
+    // Получаем ID пользователей в порядке возрастания
+    QList<int> userIds;
+    foreach (const QString &username, usernames) {
+        query.prepare("SELECT UserID FROM Users WHERE Username = :username");
+        query.bindValue(":username", username);
+        if (query.exec() && query.next()) {
+            userIds.append(query.value(0).toInt());
+        } else {
+            qDebug() << "Пользователь не найден:" << username;
+            return;
+        }
+    }
+
+    // Сортируем ID пользователей
+    std::sort(userIds.begin(), userIds.end());
+
+    // Создаем строку ParticipantIDs
+    QStringList participantIdsStrList;
+    foreach (int userId, userIds) {
+        participantIdsStrList << QString::number(userId);
+    }
+    QString participantIdsStr = participantIdsStrList.join(',');
+
+    //Проверяем, существует ли уже чат с такими участниками
+    query.prepare("SELECT * FROM Chats WHERE ParticipantIDs = :participantIds");
+    query.bindValue(":participantIds", participantIdsStr);
+    if (query.exec() && query.next()) {
+        int chatID = query.value(0).toInt(); // Получаем ID чата
+        ShowChat(chatID);
+        return;
+    }
+
+    //Добавляем новый чат в таблицу Chats
+    query.prepare("INSERT INTO Chats (ParticipantIDs, ChatName) VALUES (:participantIds, :chatname)");
+    query.bindValue(":participantIds", participantIdsStr);
+    query.bindValue(":chatname", chatname);
+    if (!query.exec()) {
+        qDebug() << "Не удалось создать чат:" << query.lastError().text();
+        return;
+    }
+
+    //Получаем ChatID новосозданного чата
+    int newChatId = query.lastInsertId().toInt();
+
+    //Добавляем сообщение от сервера об успешном создании чата
+    query.prepare("INSERT INTO Messages (SenderID, ChatID, Content) VALUES (:senderId, :chatId, :content)");
+    query.bindValue(":senderId", 0);
+    query.bindValue(":chatId", newChatId);
+    query.bindValue(":content", "Чат успешно создан.");
+    if (!query.exec()) {
+        qDebug() << "Не удалось добавить сообщение от сервера:" << query.lastError().text();
+        return;
+    }
+    ShowChat(newChatId);
+}
+
+//Занесение сообщения в базу данных
 void Server::ReceiveMessage(QString message)
 {
-    //Занесение сообщения в базу данных
+
     QSqlQuery query;
     ClientInfo clientInfo = clients.value(socket);
     int senderID = clientInfo.userID;
@@ -476,22 +624,4 @@ void Server::ReceiveMessage(QString message)
             socket->write(Data);
         }
     }
-}
-
-//Отправка сообщения
-void Server::SendToClient(QString str, QString user)
-{
-
-    /*Data.clear();
-    QDataStream out(&Data, QIODevice::WriteOnly);
-    out.setVersion(QDataStream::Qt_6_2);
-    out << quint16(0) << MessageType::Message << QTime::currentTime() << user << str;
-    out.device()->seek(0);
-    out << quint16(Data.size() - sizeof(quint16));
-    // Отправка данных всем подключенным клиентам
-    foreach (QTcpSocket* clientSocket, clients.values()) {
-        if (clientSocket->state() == QAbstractSocket::ConnectedState) {
-            clientSocket->write(Data);
-        }
-    }*/
 }

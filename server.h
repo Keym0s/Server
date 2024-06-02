@@ -27,14 +27,15 @@ private:
     QMap<QTcpSocket *, ClientInfo> clients; //Сопоставление сокета и пользователя
     QByteArray Data;
     QSqlDatabase db;
-    void SendToClient(QString str, QString user);
     void slotProcessAuthData(QString login, QString password);
     void slotRegisterUser(QString login, QString password);
     void GetContacts();
+    void GetChats();
     void SendPrivateChat(const QStringList &usernames);
     void ShowChat(int ChatID);
     void ReceiveMessage(QString message);
     quint16 nextBlockSize;
+    void SendGroupChat(const QStringList &usernames, const QString &chatname);
 public slots:
     void incomingConnection(qintptr socketDescriptor);
     void slotReadyRead();

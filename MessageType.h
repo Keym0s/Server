@@ -10,7 +10,10 @@ enum class MessageType
     AuthError,
     Register,
     GetContacts,
-    JoinChat
+    GetChats,
+    JoinChat,
+    JoinGroupChat,
+    ShowGroupChat
 };
 
 #endif // MESSAGETYPE_H

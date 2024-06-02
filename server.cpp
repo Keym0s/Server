@@ -34,12 +34,6 @@ Server::Server()
                "Password TEXT NOT NULL, "
                "LastLogin DATETIME)");
 
-    //Таблица контактов
-    query.exec("CREATE TABLE IF NOT EXISTS Contacts ("
-               "ContactID INTEGER PRIMARY KEY AUTOINCREMENT, "
-               "UserID INTEGER NOT NULL, "
-               "ContactUserID INTEGER NOT NULL)");
-
     //Таблица сообщений
     query.exec("CREATE TABLE IF NOT EXISTS Messages ("
                "MessageID INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -65,9 +59,9 @@ Server::Server()
 //Деструктор
 Server::~Server()
 {
-    //Закрытие всех сокетов
-    foreach (int userID, clients.keys()) {
-        QTcpSocket* socket = clients.value(userID);
+    // Закрытие всех сокетов
+    foreach (QTcpSocket* socket, clients.keys()) {
+        // Закрытие сокета
         socket->close();
         socket->deleteLater();
     }
@@ -82,12 +76,25 @@ void Server::incomingConnection(qintptr socketDescriptor)
 {
     socket = new QTcpSocket;
     socket->setSocketDescriptor(socketDescriptor);
-    connect(socket,&QTcpSocket::readyRead, this, &Server::slotReadyRead);
-    connect(socket,&QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+    connect(socket, &QTcpSocket::readyRead, this, &Server::slotReadyRead);
+    connect(socket, &QTcpSocket::disconnected, this, &Server::clientDisconnected);
 
-    //Sockets.push_back(socket);
-    clients.insert(0, socket);
-    qDebug() << "client connected" << socketDescriptor;
+    ClientInfo clientInfo;
+    clientInfo.userID = -1;
+    clientInfo.chatID = -1;
+
+    clients.insert(socket, clientInfo); // Вставка пары сокет-информация о клиенте в QMap
+    qDebug() << "Клиент подключен" << socketDescriptor;
+}
+
+//Отключения клиента
+void Server::clientDisconnected()
+{
+    if (socket) {
+        clients.remove(socket); //Удаление информации о клиенте из QMap
+        socket->deleteLater(); //Запланировать удаление объекта сокета
+        qDebug() << "Клиент отключен";
+    }
 }
 
 //Чтение входящего запроса
@@ -121,10 +128,9 @@ void Server::slotReadyRead()
                 case MessageType::Message:
                 {
                     qDebug() << "Сообщение принято от" << socketDescriptor();
-                    QString str, user;
-                    QTime time;
-                    in >> time >> str >> user;
-                    SendToClient(str, user);
+                    QString str;
+                    in >> str;
+                    ReceiveMessage(str);
                     break;
                 }
                 case MessageType::AuthData:
@@ -175,8 +181,24 @@ void Server::slotProcessAuthData(QString login, QString password)
 
     if (query.next())
     {
+        //Получаем userID из результатов запроса
+        int userID = query.value("UserID").toInt();
+
         //Пользователь найден
-        qDebug() << "Пользователь авторизован: " << login;
+        qDebug() << "Пользователь авторизован: " << login << " ID:" << userID;
+
+        //Находим сокет, связанный с этим логином
+
+        //Проверяем, есть ли такой сокет в QMap
+        if (clients.contains(socket)) {
+
+            //Извлекаем текущую информацию о клиенте
+            ClientInfo& clientInfo = clients[socket];
+
+            //Обновляем userID
+            clientInfo.userID = userID;
+            clientInfo.chatID = 0;
+        }
 
         //Отправить подтверждение клиенту
         Data.clear();
@@ -364,6 +386,15 @@ void Server::ShowChat(int ChatID)
         qDebug() << "Ошибка при выборке сообщений: " << query.lastError().text();
         return;
     }
+    //Проверяем, есть ли такой сокет в QMap
+    if (clients.contains(socket)) {
+
+        //Извлекаем текущую информацию о клиенте
+        ClientInfo& clientInfo = clients[socket];
+
+        //Обновляем chatID
+        clientInfo.chatID = ChatID;
+    }
     QStringList messages;
     Data.clear();
     QDataStream out(&Data, QIODevice::WriteOnly);
@@ -386,10 +417,9 @@ void Server::ShowChat(int ChatID)
         }
 
         //Формируем строку сообщения с именем пользователя и временем отправки
-        QString messageString = QString("%1 [%2] %3").arg(timestamp).arg(username).arg(content);
-        qDebug() << messageString;
+        QString messageString = QString("%1 [%2]: %3").arg(timestamp).arg(username).arg(content);
         //Добавляем сообщение в QByteArray
-        messages.append(messageString + "\n");
+        messages.append(messageString);
     }
 
     //Отправляем собранный QByteArray через сокет
@@ -397,10 +427,62 @@ void Server::ShowChat(int ChatID)
     socket->write(Data);
 }
 
-//Отправка сообщения в общий чат
+void Server::ReceiveMessage(QString message)
+{
+    //Занесение сообщения в базу данных
+    QSqlQuery query;
+    ClientInfo clientInfo = clients.value(socket);
+    int senderID = clientInfo.userID;
+    int chatID = clientInfo.chatID;
+    query.prepare("INSERT INTO Messages (SenderID, ChatID, Content) VALUES (:senderID, :chatID, :content)");
+    query.bindValue(":senderID", senderID);
+    query.bindValue(":chatID", chatID);
+    query.bindValue(":content", message);
+    if (!query.exec()) {
+        qDebug() << "Ошибка при добавлении сообщения в базу данных:" << query.lastError();
+        return;
+    }
+
+    //Получение MessageID последнего вставленного сообщения
+    int messageID = query.lastInsertId().toInt();
+
+    //Получение имени пользователя и временной метки из базы данных
+    query.prepare("SELECT Username, Timestamp FROM Users, Messages WHERE Messages.MessageID = :messageID AND Users.UserID = Messages.SenderID");
+    query.bindValue(":messageID", messageID);
+    if (!query.exec()) {
+        qDebug() << "Ошибка при получении данных из базы данных:" << query.lastError();
+        return;
+    }
+
+    QString username, timestamp;
+    if (query.next()) {
+        username = query.value("Username").toString();
+        timestamp = query.value("Timestamp").toString();
+    }
+
+    //Формируем строку сообщения с именем пользователя и временем отправки
+    QString messageString = QString("%1 [%2]: %3").arg(timestamp).arg(username).arg(message);
+
+    //Отправка сообщения всем клиентам в чате
+    foreach (QTcpSocket *socket, clients.keys()) {
+        ClientInfo clientInfo = clients.value(socket);
+        if (clientInfo.chatID == chatID) {
+            Data.clear();
+            QDataStream out(&Data, QIODevice::WriteOnly);
+            out.setVersion(QDataStream::Qt_6_2);
+            out << quint16(0) << MessageType::Message << messageString;
+            out.device()->seek(0);
+            out << quint16(Data.size() - sizeof(quint16));
+            socket->write(Data);
+        }
+    }
+}
+
+//Отправка сообщения
 void Server::SendToClient(QString str, QString user)
 {
-    Data.clear();
+
+    /*Data.clear();
     QDataStream out(&Data, QIODevice::WriteOnly);
     out.setVersion(QDataStream::Qt_6_2);
     out << quint16(0) << MessageType::Message << QTime::currentTime() << user << str;
@@ -411,5 +493,5 @@ void Server::SendToClient(QString str, QString user)
         if (clientSocket->state() == QAbstractSocket::ConnectedState) {
             clientSocket->write(Data);
         }
-    }
+    }*/
 }

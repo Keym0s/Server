@@ -20,7 +20,11 @@ public:
     QTcpSocket* socket;
 
 private:
-    QMap<int, QTcpSocket *> clients; //Сопоставление ID пользователя и сокета
+    struct ClientInfo {
+        int userID;
+        int chatID;
+    };
+    QMap<QTcpSocket *, ClientInfo> clients; //Сопоставление сокета и пользователя
     QByteArray Data;
     QSqlDatabase db;
     void SendToClient(QString str, QString user);
@@ -29,13 +33,12 @@ private:
     void GetContacts();
     void SendPrivateChat(const QStringList &usernames);
     void ShowChat(int ChatID);
+    void ReceiveMessage(QString message);
     quint16 nextBlockSize;
 public slots:
     void incomingConnection(qintptr socketDescriptor);
     void slotReadyRead();
-
-
-
+    void clientDisconnected();
 };
 
 #endif // SERVER_H
